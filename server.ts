@@ -412,45 +412,8 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Admin Login with Rate Limiting & Brute-Force Protection
-  app.post('/api/auth/admin/login', (req: Request, res: Response) => {
-    const clientIp = req.ip || 'unknown';
-    const now = Date.now();
-    const attemptInfo = adminLoginAttempts.get(clientIp) || { count: 0, lockUntil: 0 };
-
-    if (now < attemptInfo.lockUntil) {
-      const waitSeconds = Math.ceil((attemptInfo.lockUntil - now) / 1000);
-      res.status(429).json({
-        error: `Juda ko‘p noto‘g‘ri urinishlar. Iltimos, ${waitSeconds} soniyadan so‘ng qaytadan urinib ko‘ring.`
-      });
-      return;
-    }
-
-    const { code } = req.body;
-    if (typeof code !== 'string' || !code.trim()) {
-      res.status(400).json({ error: 'Kod noto‘g‘ri. Qaytadan urinib ko‘ring.' });
-      return;
-    }
-
-    // Constant-time comparison to prevent timing attacks
-    const inputBuf = Buffer.from(code.trim());
-    const secretBuf = Buffer.from(ADMIN_SECRET_CODE);
-    const isMatch =
-      inputBuf.length === secretBuf.length &&
-      crypto.timingSafeEqual(inputBuf, secretBuf);
-
-    if (!isMatch) {
-      attemptInfo.count += 1;
-      if (attemptInfo.count >= 5) {
-        attemptInfo.lockUntil = now + 60 * 1000; // 1 minute lockout after 5 failed attempts
-        attemptInfo.count = 0;
-      }
-      adminLoginAttempts.set(clientIp, attemptInfo);
-      res.status(401).json({ error: 'Kod noto‘g‘ri. Qaytadan urinib ko‘ring.' });
-      return;
-    }
-
-    adminLoginAttempts.delete(clientIp);
+  // Direct Passwordless Admin Login
+  app.post('/api/auth/admin/login', (_req: Request, res: Response) => {
     const session = createSession('admin', '40-maktab Bosh administratori');
     res.json({
       token: session.token,
@@ -459,51 +422,13 @@ async function startServer() {
     });
   });
 
-  // Viewer Code-Based Login (201311)
-  app.post('/api/auth/viewer/login', (req: Request, res: Response) => {
-    const clientIp = req.ip || 'unknown';
-    const now = Date.now();
-    const attemptInfo = adminLoginAttempts.get(`viewer:${clientIp}`) || { count: 0, lockUntil: 0 };
-
-    if (now < attemptInfo.lockUntil) {
-      const waitSeconds = Math.ceil((attemptInfo.lockUntil - now) / 1000);
-      res.status(429).json({
-        error: `Juda ko‘p noto‘g‘ri urinishlar. Iltimos, ${waitSeconds} soniyadan so‘ng qaytadan urinib ko‘ring.`
-      });
-      return;
-    }
-
-    const { code } = req.body;
-    if (typeof code !== 'string' || !code.trim()) {
-      res.status(400).json({ error: 'Kod noto‘g‘ri. Qaytadan urinib ko‘ring.' });
-      return;
-    }
-
-    const viewerSecret = process.env.VIEWER_ACCESS_CODE || '201311';
-    const inputBuf = Buffer.from(code.trim());
-    const secretBuf = Buffer.from(viewerSecret);
-    const isMatch =
-      inputBuf.length === secretBuf.length &&
-      crypto.timingSafeEqual(inputBuf, secretBuf);
-
-    if (!isMatch) {
-      attemptInfo.count += 1;
-      if (attemptInfo.count >= 5) {
-        attemptInfo.lockUntil = now + 60 * 1000;
-        attemptInfo.count = 0;
-      }
-      adminLoginAttempts.set(`viewer:${clientIp}`, attemptInfo);
-      res.status(401).json({ error: 'Kod noto‘g‘ri. Qaytadan urinib ko‘ring.' });
-      return;
-    }
-
-    adminLoginAttempts.delete(`viewer:${clientIp}`);
+  // Direct Passwordless Viewer Login
+  app.post('/api/auth/viewer/login', (_req: Request, res: Response) => {
     const session = createSession('viewer', '40-maktab Ko‘ruvchisi');
-
     res.json({
       token: session.token,
       role: session.role,
-      identifier: session.identifier
+      identifier: session.identifier,
     });
   });
 
