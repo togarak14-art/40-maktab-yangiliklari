@@ -1,0 +1,6 @@
+{
+  "name": "40-MAKTAB",
+  "description": "40-maktab yangiliklari va e’lonlari — rasmiy maktab axborot portali.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
