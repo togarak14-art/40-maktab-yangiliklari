@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { BookOpen, Film } from 'lucide-react';
+import { resolveAssetUrl } from '../storage';
 
 interface ResilientImageProps {
   src?: string;
@@ -17,8 +18,9 @@ export const ResilientImage: React.FC<ResilientImageProps> = ({
   hasVideo = false,
 }) => {
   const [hasError, setHasError] = useState(false);
+  const resolvedSrc = resolveAssetUrl(src);
 
-  if (!src || hasError) {
+  if (!resolvedSrc || hasError) {
     return (
       <div
         className={`flex flex-col items-center justify-center bg-gradient-to-br from-[#0F172A] via-[#1E3A8A] to-[#1E293B] text-white p-6 text-center select-none ${className}`}
@@ -37,7 +39,7 @@ export const ResilientImage: React.FC<ResilientImageProps> = ({
   return (
     <div className="relative w-full h-full overflow-hidden bg-slate-100">
       <img
-        src={src}
+        src={resolvedSrc}
         alt={alt}
         loading="lazy"
         referrerPolicy="no-referrer"

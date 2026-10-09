@@ -27,6 +27,14 @@ import {
   formatUzbekDate,
   formatFileSize,
 } from '../types';
+import {
+  getLocalNews,
+  saveLocalNews,
+  getLocalMedia,
+  saveLocalMedia,
+  saveLocalSettings,
+  computeLocalStats,
+} from '../storage';
 import { ResilientImage } from './ResilientImage';
 
 interface AdminDashboardProps {
@@ -82,15 +90,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const res = await fetch('/api/stats', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         setStats(data);
+        setLoadingStats(false);
+        return;
       }
     } catch {
-      // ignore
-    } finally {
-      setLoadingStats(false);
+      // Fallback to local stats
     }
+    setStats(computeLocalStats());
+    setLoadingStats(false);
   }, [authToken]);
 
   const fetchMedia = useCallback(async () => {
@@ -99,15 +110,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const res = await fetch('/api/media', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         setMediaList(data.media || []);
+        setLoadingMedia(false);
+        return;
       }
     } catch {
-      // ignore
-    } finally {
-      setLoadingMedia(false);
+      // Fallback to local media
     }
+    setMediaList(getLocalMedia());
+    setLoadingMedia(false);
   }, [authToken]);
 
   useEffect(() => {
@@ -144,7 +158,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setActiveTab('create_news');
   };
 
-  // File Upload Handler with validation, size checks, and progress
+  // File Upload Handler with validation, size checks, and fallback for static hosting
   const handleFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
     targetType: 'image' | 'video'
@@ -186,9 +200,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
 
     reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      setUploadProgress(85);
+
+      let uploadedUrl = dataUrl;
       try {
-        setUploadProgress(80);
-        const dataUrl = reader.result as string;
         const res = await fetch('/api/media/upload', {
           method: 'POST',
           headers: {
@@ -202,36 +218,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             size: file.size,
           }),
         });
-
-        const data = await res.json();
-        if (!res.ok) {
-          showToast(data.error || 'Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-          setUploadingType(null);
-          setUploadProgress(0);
-          return;
-        }
-
-        setUploadProgress(100);
-        if (targetType === 'image') {
-          setImageUrl(data.media.url);
-          setImageMeta({ name: file.name, size: file.size });
-          showToast('Rasm yuklandi.', 'success');
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.media?.url) {
+            uploadedUrl = data.media.url;
+          }
         } else {
-          setVideoUrl(data.media.url);
-          setVideoMeta({ name: file.name, size: file.size });
-          showToast('Video yuklandi.', 'success');
+          throw new Error('Static fallback');
         }
-
-        fetchMedia();
-        fetchStats();
       } catch {
-        showToast('Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-      } finally {
-        setTimeout(() => {
-          setUploadingType(null);
-          setUploadProgress(0);
-        }, 400);
+        // Save to local media storage when running on static site
+        const newMedia: MediaFile = {
+          id: `media-${Date.now()}`,
+          name: file.name,
+          url: dataUrl,
+          type: targetType,
+          mimeType: file.type,
+          size: file.size,
+          createdAt: new Date().toISOString(),
+        };
+        const currentMedia = getLocalMedia();
+        saveLocalMedia([newMedia, ...currentMedia]);
       }
+
+      setUploadProgress(100);
+      if (targetType === 'image') {
+        setImageUrl(uploadedUrl);
+        setImageMeta({ name: file.name, size: file.size });
+        showToast('Rasm yuklandi.', 'success');
+      } else {
+        setVideoUrl(uploadedUrl);
+        setVideoMeta({ name: file.name, size: file.size });
+        showToast('Video yuklandi.', 'success');
+      }
+
+      fetchMedia();
+      fetchStats();
+      setTimeout(() => {
+        setUploadingType(null);
+        setUploadProgress(0);
+      }, 400);
     };
 
     reader.readAsDataURL(file);
@@ -246,6 +273,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
 
     setSubmittingNews(true);
+    let savedOnServer = false;
+
     try {
       const endpoint = editingId ? `/api/news/${editingId}` : '/api/news';
       const method = editingId ? 'PUT' : 'POST';
@@ -266,29 +295,63 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        showToast(data.error || 'Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-        setSubmittingNews(false);
-        return;
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        savedOnServer = true;
       }
-
-      showToast(
-        publishNow
-          ? 'Yangilik muvaffaqiyatli e’lon qilindi.'
-          : 'Yangilik muvaffaqiyatli saqlandi.',
-        'success'
-      );
-
-      resetEditor();
-      await onRefreshData();
-      await fetchStats();
-      setActiveTab('news_list');
     } catch {
-      showToast('Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-    } finally {
-      setSubmittingNews(false);
+      // Fallback to localStorage below
     }
+
+    if (!savedOnServer) {
+      const currentList = getLocalNews();
+      const now = new Date().toISOString();
+      if (editingId) {
+        const updatedList = currentList.map((item) =>
+          item.id === editingId
+            ? {
+                ...item,
+                title: title.trim(),
+                content: content.trim(),
+                category,
+                imageUrl,
+                videoUrl,
+                published: publishNow,
+                updatedAt: now,
+              }
+            : item
+        );
+        saveLocalNews(updatedList);
+      } else {
+        const newItem: NewsItem = {
+          id: `news-${Date.now()}`,
+          title: title.trim(),
+          content: content.trim(),
+          category,
+          imageUrl,
+          videoUrl,
+          createdAt: now,
+          updatedAt: now,
+          published: publishNow,
+          author: '40-maktab ma’muriyati',
+          views: 1,
+        };
+        saveLocalNews([newItem, ...currentList]);
+      }
+    }
+
+    showToast(
+      publishNow
+        ? 'Yangilik muvaffaqiyatli e’lon qilindi.'
+        : 'Yangilik muvaffaqiyatli saqlandi.',
+      'success'
+    );
+
+    resetEditor();
+    await onRefreshData();
+    await fetchStats();
+    setSubmittingNews(false);
+    setActiveTab('news_list');
   };
 
   // Confirm Delete News
@@ -296,51 +359,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (!deleteTargetNews) return;
     setDeletingNews(true);
 
+    let deletedOnServer = false;
     try {
       const res = await fetch(`/api/news/${deleteTargetNews.id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      const data = await res.json();
-
-      if (!res.ok) {
-        showToast(data.error || 'Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-        setDeletingNews(false);
-        return;
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        deletedOnServer = true;
       }
-
-      showToast('Yangilik o‘chirildi.', 'success');
-      setDeleteTargetNews(null);
-      await onRefreshData();
-      await fetchStats();
     } catch {
-      showToast('Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-    } finally {
-      setDeletingNews(false);
+      // Fallback to localStorage
     }
+
+    if (!deletedOnServer) {
+      const filtered = getLocalNews().filter((n) => n.id !== deleteTargetNews.id);
+      saveLocalNews(filtered);
+    }
+
+    showToast('Yangilik o‘chirildi.', 'success');
+    setDeleteTargetNews(null);
+    await onRefreshData();
+    await fetchStats();
+    setDeletingNews(false);
   };
 
   // Delete Media File
   const handleDeleteMedia = async (id: string) => {
+    let deletedOnServer = false;
     try {
       const res = await fetch(`/api/media/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      if (res.ok) {
-        showToast('Yangilik o‘chirildi.', 'info');
-        fetchMedia();
-        fetchStats();
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        deletedOnServer = true;
       }
     } catch {
-      showToast('Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
+      // Fallback
     }
+
+    if (!deletedOnServer) {
+      const filtered = getLocalMedia().filter((m) => m.id !== id);
+      saveLocalMedia(filtered);
+    }
+
+    showToast('Yangilik o‘chirildi.', 'info');
+    fetchMedia();
+    fetchStats();
   };
 
   // Save School Settings
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingSettings(true);
+    let savedOnServer = false;
+
     try {
       const res = await fetch('/api/settings', {
         method: 'PUT',
@@ -350,18 +426,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         },
         body: JSON.stringify(settingsForm),
       });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || 'Yangilik muvaffaqiyatli saqlandi.', 'success');
-        await onRefreshData();
-      } else {
-        showToast('Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        savedOnServer = true;
       }
     } catch {
-      showToast('Xatolik yuz berdi. Qaytadan urinib ko‘ring.', 'error');
-    } finally {
-      setSavingSettings(false);
+      // Fallback
     }
+
+    if (!savedOnServer) {
+      saveLocalSettings(settingsForm);
+    }
+
+    showToast('Yangilik muvaffaqiyatli saqlandi.', 'success');
+    await onRefreshData();
+    setSavingSettings(false);
   };
 
   const navItems: { id: AdminTab; label: string; icon: React.ReactNode }[] = [

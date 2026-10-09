@@ -7,30 +7,23 @@ import {
   AppView,
   ToastNotification,
 } from './types';
+import {
+  getLocalNews,
+  saveLocalNews,
+  getLocalSettings,
+  INITIAL_SETTINGS,
+} from './storage';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { PublicViews } from './components/PublicViews';
 import { AuthViews } from './components/AuthViews';
 import { AdminDashboard } from './components/AdminDashboard';
 
-const DEFAULT_SETTINGS: SchoolSettings = {
-  schoolName: '40-MAKTAB',
-  subtitle: '40-maktab yangiliklari va e’lonlari',
-  address: 'Andijon viloyati, Oltinkoʻl tumani, Koʻtarma chek koʻchasi',
-  phone: '+998 93 547 14 20',
-  email: 'info@40-maktab.uz',
-  workingHours: 'Dushanba – Shanba: 08:00 – 18:00',
-  directorName: 'Rustamova Dilnoza Karimovna',
-  studentCount: 1420,
-  teacherCount: 86,
-  foundedYear: 1984,
-};
-
 export default function App() {
   const [currentView, setCurrentView] = useState<AppView>('home');
   const [activeCategory, setActiveCategory] = useState<NewsCategory | 'Barchasi'>('Barchasi');
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [settings, setSettings] = useState<SchoolSettings>(DEFAULT_SETTINGS);
+  const [news, setNews] = useState<NewsItem[]>(() => getLocalNews());
+  const [settings, setSettings] = useState<SchoolSettings>(() => getLocalSettings() || INITIAL_SETTINGS);
   const [selectedNews, setSelectedNews] = useState<NewsItem | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
@@ -39,7 +32,10 @@ export default function App() {
   const [authToken, setAuthToken] = useState<string>(() => {
     return localStorage.getItem('maktab40_token') || '';
   });
-  const [userRole, setUserRole] = useState<'admin' | 'viewer' | null>(null);
+  const [userRole, setUserRole] = useState<'admin' | 'viewer' | null>(() => {
+    const savedRole = localStorage.getItem('maktab40_role');
+    return savedRole === 'admin' || savedRole === 'viewer' ? savedRole : null;
+  });
 
   // Toast Notifications State
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
@@ -70,7 +66,7 @@ export default function App() {
     };
   }, [showToast]);
 
-  // Fetch News & School Settings
+  // Fetch News & School Settings (with seamless localStorage fallback for static sites)
   const fetchNewsAndSettings = useCallback(async (tokenOverride?: string) => {
     const tokenToUse = tokenOverride !== undefined ? tokenOverride : authToken;
     try {
@@ -79,18 +75,27 @@ export default function App() {
         headers.Authorization = `Bearer ${tokenToUse}`;
       }
       const res = await fetch('/api/news', { headers });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        setNews(data.news || []);
+        if (Array.isArray(data.news)) {
+          setNews(data.news);
+          saveLocalNews(data.news);
+        }
         if (data.settings) {
           setSettings(data.settings);
         }
+        setLoading(false);
+        return;
       }
     } catch {
-      // Handled gracefully
-    } finally {
-      setLoading(false);
+      // Static hosting fallback below
     }
+
+    // Fallback to localStorage when deployed on static hosting
+    setNews(getLocalNews());
+    setSettings(getLocalSettings());
+    setLoading(false);
   }, [authToken]);
 
   // Verify stored token on boot
@@ -101,18 +106,21 @@ export default function App() {
           const res = await fetch('/api/auth/session', {
             headers: { Authorization: `Bearer ${authToken}` },
           });
-          if (res.ok) {
+          const contentType = res.headers.get('content-type') || '';
+          if (res.ok && contentType.includes('application/json')) {
             const data = await res.json();
             if (data.authenticated) {
               setUserRole(data.role);
-            } else {
+              localStorage.setItem('maktab40_role', data.role);
+            } else if (!authToken.startsWith('local-')) {
               localStorage.removeItem('maktab40_token');
+              localStorage.removeItem('maktab40_role');
               setAuthToken('');
               setUserRole(null);
             }
           }
         } catch {
-          // ignore
+          // Keep local role on static hosting
         }
       }
       await fetchNewsAndSettings();
@@ -137,29 +145,39 @@ export default function App() {
   };
 
   const handleOpenNewsDetail = async (item: NewsItem) => {
-    setSelectedNews(item);
+    const incremented = { ...item, views: (item.views || 0) + 1 };
+    setSelectedNews(incremented);
     setCurrentView('news_detail');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     // Record view in background
     try {
       const res = await fetch(`/api/news/${item.id}`);
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (data.item) {
           setSelectedNews(data.item);
           setNews((prev) =>
             prev.map((n) => (n.id === data.item.id ? data.item : n))
           );
+          return;
         }
       }
     } catch {
-      // ignore
+      // Static fallback
     }
+
+    const updatedLocal = getLocalNews().map((n) =>
+      n.id === item.id ? incremented : n
+    );
+    saveLocalNews(updatedLocal);
+    setNews(updatedLocal);
   };
 
   const handleAdminLoginSuccess = async (token: string) => {
     localStorage.setItem('maktab40_token', token);
+    localStorage.setItem('maktab40_role', 'admin');
     setAuthToken(token);
     setUserRole('admin');
     await fetchNewsAndSettings(token);
@@ -169,6 +187,7 @@ export default function App() {
 
   const handleViewerLoginSuccess = async (token: string) => {
     localStorage.setItem('maktab40_token', token);
+    localStorage.setItem('maktab40_role', 'viewer');
     setAuthToken(token);
     setUserRole('viewer');
     await fetchNewsAndSettings(token);
@@ -188,6 +207,7 @@ export default function App() {
       }
     }
     localStorage.removeItem('maktab40_token');
+    localStorage.removeItem('maktab40_role');
     setAuthToken('');
     setUserRole(null);
     await fetchNewsAndSettings('');

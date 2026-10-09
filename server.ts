@@ -354,7 +354,7 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Increase payload limit for Base64/binary media uploads up to 35MB
   app.use(express.json({ limit: '35mb' }));
@@ -412,8 +412,44 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Direct Passwordless Admin Login
-  app.post('/api/auth/admin/login', (_req: Request, res: Response) => {
+  // Admin Login with Code (201311) & Rate Limiting
+  app.post('/api/auth/admin/login', (req: Request, res: Response) => {
+    const clientIp = req.ip || 'unknown';
+    const now = Date.now();
+    const attemptInfo = adminLoginAttempts.get(clientIp) || { count: 0, lockUntil: 0 };
+
+    if (now < attemptInfo.lockUntil) {
+      const waitSeconds = Math.ceil((attemptInfo.lockUntil - now) / 1000);
+      res.status(429).json({
+        error: `Juda ko‘p noto‘g‘ri urinishlar. Iltimos, ${waitSeconds} soniyadan so‘ng qaytadan urinib ko‘ring.`
+      });
+      return;
+    }
+
+    const { code } = req.body;
+    if (typeof code !== 'string' || !code.trim()) {
+      res.status(400).json({ error: 'Kod noto‘g‘ri. Qaytadan urinib ko‘ring.' });
+      return;
+    }
+
+    const inputBuf = Buffer.from(code.trim());
+    const secretBuf = Buffer.from(ADMIN_SECRET_CODE);
+    const isMatch =
+      inputBuf.length === secretBuf.length &&
+      crypto.timingSafeEqual(inputBuf, secretBuf);
+
+    if (!isMatch) {
+      attemptInfo.count += 1;
+      if (attemptInfo.count >= 5) {
+        attemptInfo.lockUntil = now + 60 * 1000;
+        attemptInfo.count = 0;
+      }
+      adminLoginAttempts.set(clientIp, attemptInfo);
+      res.status(401).json({ error: 'Kod noto‘g‘ri. Qaytadan urinib ko‘ring.' });
+      return;
+    }
+
+    adminLoginAttempts.delete(clientIp);
     const session = createSession('admin', '40-maktab Bosh administratori');
     res.json({
       token: session.token,
